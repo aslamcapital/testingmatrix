@@ -1,0 +1,128 @@
+import yfinance as yf
+import pandas as pd
+
+# Download the data for ES1! (S&P 500 Futures) and $DXY (US Dollar Index)
+es1_ticker = "^GSPC"
+dxy_ticker = "DX-Y.NYB"
+start_date = "2020-01-01"
+end_date = "2024-01-01"
+
+es1_data = yf.download(es1_ticker, start=start_date, end=end_date)
+dxy_data = yf.download(dxy_ticker, start=start_date, end=end_date)
+
+# Resample the data to daily frequency
+es1_data = es1_data.resample('B').agg({'Close': 'last'})
+dxy_data = dxy_data.resample('B').agg({'Close': 'last'})
+
+# Merge the two datasets
+combined_data = pd.concat([es1_data['Close'], dxy_data['Close']], axis=1)
+combined_data.columns = ['ES1_Close', 'DXY_Close']
+combined_data.dropna(inplace=True)
+
+import plotly.express as px
+
+# Create hexagonal binning plot
+fig_hexbin = px.density_heatmap(
+    combined_data,
+    x='ES1_Close',
+    y='DXY_Close',
+    nbinsx=50,
+    nbinsy=50,
+    histnorm='probability',
+    color_continuous_scale='Inferno',
+    labels={'ES1_Close': 'S&P 500 Futures Close', 'DXY_Close': 'US Dollar Index Close'},
+    title=f"Correlation between S&P 500 Futures (ES1!) and US Dollar Index ($DXY)"
+)
+
+# Customize the appearance of the plot
+fig_hexbin.update_layout(
+    plot_bgcolor='rgba(245, 245, 245, 1)',
+    paper_bgcolor='rgba(245, 245, 245, 1)',
+    font=dict(
+        size=14,
+        family="Arial, sans-serif",
+        color="black"
+    ),
+    coloraxis_colorbar=dict(
+        title="Density",
+        titleside="right",
+        tickvals=[0, 0.5, 1],
+        ticktext=["Low", "Medium", "High"],
+        lenmode="fraction",
+        len=0.75,
+    )
+)
+
+fig_hexbin.show()
+
+# Calculate the daily correlation between ES1! and $DXY
+combined_data['Correlation'] = combined_data['ES1_Close'].rolling(window=10).corr(combined_data['DXY_Close'])
+
+# Save the correlation data to a CSV file
+combined_data.to_csv('daily_correlation_data.csv', index=True)
+
+from sklearn.preprocessing import MinMaxScaler
+
+# Remove rows with NaN values
+combined_data.dropna(inplace=True)
+
+# Normalize the data
+scaler = MinMaxScaler(feature_range=(0, 1))
+normalized_data = scaler.fit_transform(combined_data[['ES1_Close', 'Correlation']])
+
+# Prepare the input and output data for the LSTM model
+window_size = 60
+X = []
+y = []
+
+for i in range(window_size, len(normalized_data)):
+    X.append(normalized_data[i-window_size:i, :])
+    y.append(normalized_data[i, 0])
+
+X, y = np.array(X), np.array(y)
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM
+
+# Build the LSTM model
+model = Sequential()
+model.add(LSTM(50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
+model.add(LSTM(50, return_sequences=False))
+model.add(Dense(25))
+model.add(Dense(1))
+
+# Compile and train the LSTM model
+model.compile(optimizer='adam', loss='mean_squared_error')
+model.fit(X, y, epochs=100, batch_size=32)
+
+# Split the data into training and testing sets
+train_size = int(len(X) * 0.8)
+X_train, X_test = X[:train_size], X[train_size:]
+y_train, y_test = y[:train_size], y[train_size:]
+
+# Evaluate the model on the test set
+loss = model.evaluate(X_test, y_test)
+print(f'Test Loss: {loss}')
+
+# Make predictions using the trained model
+y_pred = model.predict(X_test)
+
+     # Reverse the normalization
+y_test = y_test.reshape(-1, 1)
+y_test = np.concatenate((y_test, np.zeros((y_test.shape[0], 1))), axis=1)
+y_test = scaler.inverse_transform(y_test)[:, 0]
+
+y_pred = np.concatenate((y_pred, np.zeros((y_pred.shape[0], 1))), axis=1)
+y_pred = scaler.inverse_transform(y_pred)[:, 0]
+
+import matplotlib.pyplot as plt
+
+# Visualize the actual prices and predicted prices
+plt.figure(figsize=(14, 6))
+plt.plot(y_test, label='Actual Prices')
+plt.plot(y_pred, label='Predicted Prices')
+plt.xlabel('Time')
+plt.ylabel('Price')
+plt.title('S&P 500 Futures (ES1!) Price Prediction')
+plt.legend()
+plt.show()
